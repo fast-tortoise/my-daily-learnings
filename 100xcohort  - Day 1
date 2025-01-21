@@ -14,7 +14,7 @@ learned about var, let and const in java and their difference.
 
 var is most lineaent, let a little more strict, const more strict.
 
-JUST CURIOUS - we can make obj out of const, can we do the same with let and var.
+JUST CURIOUS - we can make obj out of const, can we do the same with let and var. - ANS = turns out, WE CAN
 https://www.geeksforgeeks.org/difference-between-var-let-and-const-keywords-in-javascript/
 use this if you feel like a quick revision
 
@@ -41,3 +41,37 @@ JUST CURIOUS - python self.somethign scope, what if i make it in the func and us
 final remark for the day - 
 i dont feel this is the most productive day, could have done better, 
 also this course, i just will keep my head and down and keep progressing and lets see if we make something out of it.
+
+something else i stumbled upon,
+
+
+Why cant we start a variable name with a number
+
+Lexical Analysis Ambiguity:
+
+Problem: Compilers break down code into tokens (like numbers, operators, keywords, identifiers). When a variable can start with a number, it becomes difficult to distinguish between:
+
+A number literal: 123 (a numerical value)
+A variable name: 123abc
+Example:
+
+int 123abc = 5;
+Is 123 part of the variable name, or a separate number followed by the variable abc?
+Parsing Complexity:
+
+Problem: The parser, which analyzes the structure of the code, needs to handle these ambiguous cases. It might require more complex rules and lookahead mechanisms to correctly interpret the code.
+
+Example:
+
+int x = 123abc + 456;
+Is 123abc a variable, or is it intended to be 123 (a number) multiplied by abc (a variable)?
+Increased Compiler Complexity:
+
+Problem: To handle these ambiguities, the compiler needs to incorporate more complex logic and potentially larger lookahead buffers, increasing its size and potentially slowing down the compilation process.
+Why These Challenges Matter
+
+Incorrect Code Interpretation: Ambiguity can lead to the compiler misinterpreting the code, resulting in incorrect object code (the compiled output).
+Unpredictable Behavior: The program might behave unexpectedly at runtime due to incorrect variable assignments or calculations.
+Slower Compilation Times: Increased complexity can slow down the compilation process, impacting developer productivity.
+
+its simply a rule for simplicity
