@@ -1,0 +1,41 @@
+<script>
+const myTimeout = setTimeout(myGreeting, 5000);
+
+function myGreeting() {
+  document.getElementById("demo").innerHTML = "Happy Birthday!"
+}
+
+function myStopFunction() {
+  clearTimeout(myTimeout);
+}
+</script>
+
+going through js course
+i think this above code is the base implemetation for the timeout pages for flight booking like apps, pay within this window time or loose the deal. this is cool.
+stopping timeout is more like if page is closed, or booking is cancelled, the timeout is closed.
+
+microservices question to look out ans for,
+how does microservices contact with each other
+
+async function setting(){
+    const d = new Date();
+    console.log(d)
+}
+
+
+async function looping() {
+  while (true) {
+    setting(); // Call setting() directly and await its completion
+    await new Promise(resolve => setTimeout(resolve, 1000)); // Introduce a delay after setting()
+  }
+}
+
+looping()
+
+with this, tried to nderstand stuffs about promises, the role of await in promises, etc, need to learn a bit more for understanding. but i do now understand
+more than yesterday.
+
+TO DO:
+-FOLLOW THE GEMINI CHAT TO UNDERSTAND MORE ON PROMISES.
+-javascript rhino vs node
+
