@@ -1,0 +1,174 @@
+We were discussing Kafka from a senior backend / distributed systems perspective.
+
+Key points covered:
+
+1. Kafka batching with large messages
+- One prepared Kafka JSON message is ~500 KB.
+- 5 MB batch ≈ 10 messages, 10 MB ≈ 20 messages, 50 MB ≈ 100 messages.
+- 50 MB is usually too large unless carefully tuned and load-tested.
+- Practical starting point: 5–10 MB produce request, compression enabled.
+- Important configs:
+  - producer: batch.size, linger.ms, max.request.size, compression.type
+  - broker/topic: message.max.bytes, max.message.bytes
+  - consumer: fetch.max.bytes, max.partition.fetch.bytes
+- For very large payloads, better design may be object storage/blob + Kafka metadata/reference.
+
+2. Kafka replication
+- Replication factor 3 means every partition has 3 copies: 1 leader + 2 followers.
+- Producer writes to the leader partition replica.
+- Follower replicas fetch/copy data from the leader.
+- Kafka stores partition replicas as log segment files on broker disks.
+- Replicas are placed on different brokers, and in good production setups across racks/AZs using rack awareness.
+- If leader broker fails or is network-partitioned, Kafka elects a new leader from ISR.
+- If old broker comes back, it catches up and rejoins as follower/ISR.
+- ISR = in-sync replicas. With acks=all, writes are acknowledged only after required in-sync replicas confirm.
+- Replication helps survive broker/node failures and some network partitions, depending on ISR and min.insync.replicas.
+
+3. Why RF=3 generally, not RF=2
+- RF=2 can survive one broker failure, but during failure/maintenance it drops to only one remaining copy.
+- If the second broker fails before recovery, data can be lost/unavailable.
+- RF=3 gives one extra safety margin: after one failure, still two copies remain.
+- RF=2 is okay for dev/test, reproducible data, logs/metrics, cost-sensitive non-critical workloads, or where another system is the source of truth.
+- RF=3 should be used for orders, payments, inventory, financial, healthcare, and business-critical events.
+- Important related setting: min.insync.replicas, commonly RF=3 with min.insync.replicas=2 and producer acks=all.
+
+4. Broker/partition/topic/message scaling
+- Partitions determine parallelism.
+- Brokers determine infrastructure capacity: disk, CPU, RAM, network.
+- Replication determines durability/availability.
+- Topic size is total data across all partitions.
+- Broker size can be scaled by bigger disks/machines or adding brokers and rebalancing replicas.
+- Number of partitions can be increased, but existing messages do not move automatically.
+- Existing partition cannot be split into two smaller partitions.
+- Increasing partitions can change hash(key) % partitionCount for new messages, so same key may start going to a different partition after expansion.
+
+5. Partition disk size
+- Kafka does not pre-allocate equal disk space per partition.
+- If Broker 1 has 100 GB and 10 partitions, each partition does not get 10 GB reserved.
+- Partitions are just log directories/files that grow dynamically.
+- One partition can be 40 GB, another 500 MB, another 10 GB, depending on traffic.
+- There is generally no default per-partition quota.
+- If disk fills up, Kafka must rely on retention/compaction/free space; otherwise writes fail or broker becomes unhealthy.
+- Uneven partition sizes happen due to skew/hot keys.
+
+6. How Kafka chooses partition
+- If producer explicitly specifies partition, Kafka sends there. Rarely used in business code.
+- If key is provided, Kafka hashes the key and selects partition.
+- Same key goes to same partition, preserving order for that key.
+- If no key is provided, modern Kafka producer uses sticky partitioning to batch efficiently.
+- Choose partition key based on ordering boundary:
+  - order events -> orderId
+  - payment events -> paymentId
+  - wallet/account -> accountId/walletId
+  - inventory -> productId
+  - chat -> conversationId
+- Poor key choice can cause hot partitions.
+- Big tech handles hot partitions using better keys, composite keys, sharding within an entity, or custom partitioning where justified.
+- Custom partitioners exist but are rare because they complicate scaling and balancing.
+
+7. Kafka consumers and horizontal scaling
+- Normal scaling uses a consumer group.
+- If topic has 4 partitions and 2 pods in same group, Kafka may assign:
+  - Pod A -> P0, P1
+  - Pod B -> P2, P3
+- Spring Boot basic listener:
+  @KafkaListener(topics = "orders", groupId = "order-service")
+- Manual partition assignment is possible:
+  @KafkaListener(topicPartitions = @TopicPartition(topic = "orders", partitions = {"1", "2"}))
+- Manual assignment is for special cases/debugging/fixed ownership, not normal horizontal scaling.
+- Maximum active consumers in a consumer group is limited by partition count.
+
+8. What happens when a consumer pod dies
+- Kafka does not move messages between partitions.
+- Messages stay on brokers.
+- The consumer group coordinator detects missing heartbeats.
+- After timeout, rebalance happens.
+- Partitions previously owned by dead pod are assigned to remaining consumers.
+- New consumer resumes from last committed offset.
+- If a message was processed but offset not committed, it may be reprocessed.
+- Default Kafka behavior is at-least-once delivery, so consumers should be idempotent.
+- Modern systems use cooperative sticky assignor to reduce rebalance disruption.
+
+9. Out-of-order messages across partitions
+Problem discussed:
+- Message 1 has object state at t1 and is in partition 1.
+- Message 2 has same object state at t2 and is in partition 2.
+- t2 is newer.
+- Consumer 2 is fast and updates DB with t2 first.
+- Consumer 1 is slow and later processes t1.
+- Risk: stale t1 overwrites newer t2.
+
+Important principle:
+- Kafka guarantees ordering only within a partition, not across partitions.
+- If same object events can be in different partitions, correctness must be solved at write/model level, not by Kafka ordering.
+
+10. Solutions for stale overwrite / out-of-order distributed events
+Top big-tech style solutions:
+A. Version/sequence based conditional update
+- Each event has objectId and monotonic version/sequence.
+- DB update only if incoming version is newer:
+  UPDATE object_state
+  SET state = :state, version = :version
+  WHERE object_id = :objectId
+    AND version < :version;
+- Or Postgres upsert:
+  INSERT INTO object_state(object_id, state, version)
+  VALUES (:objectId, :state, :version)
+  ON CONFLICT (object_id)
+  DO UPDATE SET state = EXCLUDED.state, version = EXCLUDED.version
+  WHERE object_state.version < EXCLUDED.version;
+- This is the most practical and common solution.
+
+B. Central source of truth / sequencer
+- Since two producer pods originate events, do not let both independently invent ordering.
+- Use a central authority/state service/DB/sequence generator to assign per-object versions.
+- Options: Postgres transaction/sequence, Redis INCR, DynamoDB conditional counter, etcd/ZooKeeper/Consul, Snowflake-style ID service, dedicated state service.
+- Usually need monotonic version per object, not global sequence.
+
+C. Immutable event log + projection
+- Store all events first in object_events table/log.
+- Maintain latest_state projection by applying only newer versions.
+- Useful for audit, replay, debugging, compliance.
+- t2 arriving first and t1 arriving later is safe because both are stored, but only t2 is current.
+
+D. State machine transition validation
+- Do not allow arbitrary state overwrite.
+- Enforce legal transitions:
+  CREATED -> PAID -> SHIPPED -> DELIVERED
+- Example:
+  UPDATE orders
+  SET status = 'PAID'
+  WHERE order_id = :orderId
+    AND status = 'CREATED';
+- Late stale state is rejected if it is not a valid forward transition.
+
+E. Idempotency/deduplication
+- Every event has eventId.
+- processed_events(event_id primary key) prevents duplicate event processing.
+- Dedup alone does not solve stale overwrite; combine with version check.
+
+F. Buffer and reorder
+- If every intermediate event matters, use sequence numbers and gap detection.
+- If current version=3 and event version=5 arrives, buffer it until version=4 arrives.
+- Useful for ledger/trading/workflow systems but more complex.
+
+G. Single writer per object
+- All updates for an object go through the same logical writer/shard/actor/lock.
+- Useful when strict sequential processing is required.
+- Can be implemented with actor model, sharded workers, distributed lock, state service.
+- Distributed lock alone is not enough; still need version/transition checks.
+
+11. Scale-wise guidance
+- Low scale: version column + conditional update.
+- Medium scale: eventId dedup + version check + transaction + commit offset after DB commit.
+- High scale: central sequencer/source of truth + immutable event log + latest-state projection + idempotent consumers.
+- Money/wallet/trading/ledger: do not use naive latest-wins. Use ledger/event sourcing, strict sequencing, gap detection, reconciliation, possibly single writer per account/instrument.
+
+Preferred answer for the specific distributed problem:
+- Messages may come from different producer pods and different Kafka partitions.
+- Add eventId, objectId, version/sequence, state.
+- Ensure version is generated by a reliable source of truth or per-object sequencer.
+- Store raw events for audit/replay.
+- Update latest state only when incoming version > current version.
+- Add dedup table for eventId.
+- Validate state transitions if business workflow has ordered statuses.
